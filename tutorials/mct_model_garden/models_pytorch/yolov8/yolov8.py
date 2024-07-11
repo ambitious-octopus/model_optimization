@@ -648,8 +648,8 @@ class ModelPyTorch(nn.Module, PyTorchModelHubMixin):
             y.append(x if m.i in self.save else None)
         return x
 
-    def load_weights(self, path):
-        self.load_state_dict(torch.load(path))
+    def load_weights(self, path, strict=True):
+        self.load_state_dict(torch.load(path), strict=strict)
 
     def save_weights(self, path):
         torch.save(self.state_dict(), path)
