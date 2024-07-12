@@ -91,7 +91,24 @@ resource_utilization = mct.core.ResourceUtilization(weights_memory=resource_util
 quant_model, _ = mct.ptq.pytorch_post_training_quantization(in_module=model,
                                                             representative_data_gen=
                                                             representative_dataset_gen,
-                                                            # target_resource_utilization=resource_utilization,
+                                                            target_resource_utilization=resource_utilization,
                                                             core_config=config,
                                                             target_platform_capabilities=tpc)
 print('Quantized model is ready')
+
+# Wrapped the quantized model with PostProcess NMS.
+from tutorials.mct_model_garden.models_pytorch.yolov8.yolov8 import PostProcessWrapper
+
+# Define PostProcess params
+score_threshold = 0.001
+iou_threshold = 0.7
+max_detections = 300
+
+# Get working device
+from model_compression_toolkit.core.pytorch.pytorch_device_config import get_working_device
+device = get_working_device()
+
+quant_model_pp = PostProcessWrapper(model=quant_model,
+                                    score_threshold=score_threshold,
+                                    iou_threshold=iou_threshold,
+                                    max_detections=max_detections).to(device=device)

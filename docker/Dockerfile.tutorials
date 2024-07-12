@@ -13,7 +13,6 @@ RUN /opt/conda/bin/pip install onnx
 RUN /opt/conda/bin/pip install -q pycocotools
 RUN /opt/conda/bin/pip install 'huggingface-hub>=0.21.0'
 RUN /opt/conda/bin/pip install --pre 'sony-custom-layers-dev>=0.2.0.dev5'
-RUN /opt/conda/bin/pip install ultralytics
 
 RUN apt-get update && apt-get install ffmpeg libsm6 libxext6  -y
 # RUN /opt/conda/bin/pip install model_compression_toolkit
@@ -21,6 +20,10 @@ RUN apt-get update && apt-get install ffmpeg libsm6 libxext6  -y
 RUN /opt/conda/bin/pip install wget
 RUN /opt/conda/bin/pip install ipython
 RUN /opt/conda/bin/pip install coloredlogs
+
+RUN apt update && apt install -y git
+
+RUN /opt/conda/bin/pip install git+https://github.com/ultralytics/ultralytics.git@quan
 
 WORKDIR /workspace
 
