@@ -9,6 +9,8 @@ import wget
 import zipfile
 import logging
 import coloredlogs
+from tutorials.mct_model_garden.evaluation_metrics.coco_evaluation import coco_evaluate
+
 coloredlogs.install()
 logging.basicConfig(level=logging.INFO)
 
@@ -91,7 +93,54 @@ resource_utilization = mct.core.ResourceUtilization(weights_memory=resource_util
 quant_model, _ = mct.ptq.pytorch_post_training_quantization(in_module=model,
                                                             representative_data_gen=
                                                             representative_dataset_gen,
-                                                            # target_resource_utilization=resource_utilization,
+                                                            target_resource_utilization=resource_utilization,
                                                             core_config=config,
                                                             target_platform_capabilities=tpc)
 print('Quantized model is ready')
+
+# Wrapped the quantized model with PostProcess NMS.
+from tutorials.mct_model_garden.models_pytorch.yolov8.yolov8 import PostProcessWrapper
+
+# Define PostProcess params
+score_threshold = 0.001
+iou_threshold = 0.7
+max_detections = 300
+
+# Get working device
+from model_compression_toolkit.core.pytorch.pytorch_device_config import get_working_device
+from tutorials.mct_model_garden.models_pytorch.yolov8.yolov8 import ModelPyTorch, yaml_load, model_predict
+device = get_working_device()
+
+quant_model_pp = PostProcessWrapper(model=quant_model,
+                                    score_threshold=score_threshold,
+                                    iou_threshold=iou_threshold,
+                                    max_detections=max_detections).to(device=device)
+
+EVAL_DATASET_FOLDER = './coco/val2017'
+EVAL_DATASET_ANNOTATION_FILE = './coco/annotations/instances_val2017.json'
+INPUT_RESOLUTION = 640
+
+# Define resizing information to map between the model's output and the original image dimensions
+output_resize = {'shape': (INPUT_RESOLUTION, INPUT_RESOLUTION), 'aspect_ratio_preservation': True}
+
+# Wrapped the model with PostProcess NMS.
+# Define PostProcess params
+score_threshold = 0.001
+iou_threshold = 0.7
+max_detections = 300
+
+eval_results = coco_evaluate(model=quant_model_pp,
+                             dataset_folder=EVAL_DATASET_FOLDER,
+                             annotation_file=EVAL_DATASET_ANNOTATION_FILE,
+                             preprocess=yolov8_preprocess_chw_transpose,
+                             output_resize=output_resize,
+                             batch_size=BATCH_SIZE,
+                             model_inference=model_predict)
+
+# Print float model mAP results
+print("Float model mAP: {:.4f}".format(eval_results[0]))
+
+
+mct.exporter.pytorch_export_model(model=quant_model_pp,
+                                  save_model_path='./qmodel_pp.onnx',
+                                  repr_dataset=representative_dataset_gen)
