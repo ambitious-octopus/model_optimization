@@ -1,5 +1,3 @@
-import sys
-sys.path.append('../')
 import os
 import model_compression_toolkit as mct
 from tutorials.mct_model_garden.evaluation_metrics.coco_evaluation import coco_dataset_generator
