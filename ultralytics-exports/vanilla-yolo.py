@@ -15,25 +15,25 @@ coloredlogs.install()
 logging.basicConfig(level=logging.INFO)
 
 
-if not os.path.isdir('coco'):
+if not os.path.isdir(DATASET_ROOT):
     logging.info('Downloading COCO dataset')
-    os.mkdir('coco')
+    os.mkdir(DATASET_ROOT)
     wget.download('http://images.cocodataset.org/annotations/annotations_trainval2017.zip')
     with zipfile.ZipFile("annotations_trainval2017.zip", 'r') as zip_ref:
-        zip_ref.extractall('./coco')
+        zip_ref.extractall(DATASET_ROOT)
     os.remove('annotations_trainval2017.zip')
     
     wget.download('http://images.cocodataset.org/zips/val2017.zip')
     with zipfile.ZipFile("val2017.zip", 'r') as zip_ref:
-        zip_ref.extractall('./coco')
+        zip_ref.extractall(DATASET_ROOT)
     os.remove('val2017.zip')
     
 
 from ultralytics import YOLO
 model = YOLO('yolov8n.yaml').load("yolov8n.pt").model
 
-REPRESENTATIVE_DATASET_FOLDER = './coco/val2017/'
-REPRESENTATIVE_DATASET_ANNOTATION_FILE = './coco/annotations/instances_val2017.json'
+REPRESENTATIVE_DATASET_FOLDER = f'{DATASET_ROOT}/val2017/'
+REPRESENTATIVE_DATASET_ANNOTATION_FILE = f'{DATASET_ROOT}/annotations/instances_val2017.json'
 BATCH_SIZE = 4
 n_iters = 20
 
