@@ -12,6 +12,7 @@ from tutorials.mct_model_garden.evaluation_metrics.coco_evaluation import coco_e
 coloredlogs.install()
 logging.basicConfig(level=logging.INFO)
 
+DATASET_ROOT = "./coco"
 
 if not os.path.isdir(DATASET_ROOT):
     logging.info('Downloading COCO dataset')
