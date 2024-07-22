@@ -25,4 +25,4 @@ RUN apt update && apt install -y git
 
 WORKDIR /workspace
 
-ENTRYPOINT ["/bin/bash", "-c", "/opt/conda/bin/pip install -e . && /opt/conda/bin/pip install -e ultralytics/ && exec /bin/bash"]
+ENTRYPOINT ["/bin/bash", "-c", "/opt/conda/bin/pip install -e . && /opt/conda/bin/pip install -e ultralytics-package/ && exec /bin/bash"]
