@@ -31,6 +31,10 @@ if not os.path.isdir(DATASET_ROOT):
 from ultralytics import YOLO
 model = YOLO('yolov8n.yaml').load("yolov8n.pt").model
 
+for m in model.modules():
+    if isinstance(m, C2f):
+        m.forward = m.forward_fx
+
 REPRESENTATIVE_DATASET_FOLDER = f'{DATASET_ROOT}/val2017/'
 REPRESENTATIVE_DATASET_ANNOTATION_FILE = f'{DATASET_ROOT}/annotations/instances_val2017.json'
 BATCH_SIZE = 4
@@ -115,8 +119,8 @@ quant_model_pp = PostProcessWrapper(model=quant_model,
                                     iou_threshold=iou_threshold,
                                     max_detections=max_detections).to(device=device)
 
-EVAL_DATASET_FOLDER = './coco/val2017'
-EVAL_DATASET_ANNOTATION_FILE = './coco/annotations/instances_val2017.json'
+EVAL_DATASET_FOLDER = f'{DATASET_ROOT}/val2017/'
+EVAL_DATASET_ANNOTATION_FILE = f'{DATASET_ROOT}/annotations/instances_val2017.json'
 INPUT_RESOLUTION = 640
 
 # Define resizing information to map between the model's output and the original image dimensions
