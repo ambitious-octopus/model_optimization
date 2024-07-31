@@ -29,6 +29,7 @@ if not os.path.isdir(DATASET_ROOT):
     
 
 from ultralytics import YOLO
+from ultralytics.nn.modules import C2f
 model = YOLO('yolov8n.yaml').load("yolov8n.pt").model
 
 for m in model.modules():
