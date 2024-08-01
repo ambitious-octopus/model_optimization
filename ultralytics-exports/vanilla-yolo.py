@@ -12,7 +12,7 @@ from tutorials.mct_model_garden.evaluation_metrics.coco_evaluation import coco_e
 coloredlogs.install()
 logging.basicConfig(level=logging.INFO)
 
-DATASET_ROOT = "./coco"
+DATASET_ROOT = "/home/laughing/datasets/coco"
 
 if not os.path.isdir(DATASET_ROOT):
     logging.info('Downloading COCO dataset')
@@ -29,12 +29,15 @@ if not os.path.isdir(DATASET_ROOT):
     
 
 from ultralytics import YOLO
-from ultralytics.nn.modules import C2f
+from ultralytics.nn.modules import C2f, Detect
 model = YOLO('yolov8n.yaml').load("yolov8n.pt").model
 
 for m in model.modules():
     if isinstance(m, C2f):
         m.forward = m.forward_fx
+    if isinstance(m, Detect):
+        m.export = True
+        m.format = "sony"
 
 REPRESENTATIVE_DATASET_FOLDER = f'{DATASET_ROOT}/val2017/'
 REPRESENTATIVE_DATASET_ANNOTATION_FILE = f'{DATASET_ROOT}/annotations/instances_val2017.json'
