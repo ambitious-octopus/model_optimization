@@ -1,4 +1,4 @@
-# Copyright 2022 Sony Semiconductor Israel, Inc. All rights reserved.
+# Copyright 2024 Sony Semiconductor Israel, Inc. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,19 +13,4 @@
 # limitations under the License.
 # ==============================================================================
 
-
-import torch
-
-from model_compression_toolkit.core.pytorch.constants import PLACEHOLDER
-
-
-class DummyPlaceHolder(torch.nn.Module):
-    """
-    Class for PlaceHolder operator since a Pytorch model doesn't have one but FX does.
-    """
-
-    def __name__(self):
-        return PLACEHOLDER  # pragma: no cover
-
-    def forward(self, x):
-        return x
+__version__ = 'v4'

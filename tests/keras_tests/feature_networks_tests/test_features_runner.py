@@ -67,7 +67,8 @@ from tests.keras_tests.feature_networks_tests.feature_networks.mixed_precision_t
     MixedPrecisionActivationSplitLayerTest, MixedPrecisionActivationOnlyWeightsDisabledTest, \
     MixedPrecisionActivationOnlyTest, MixedPrecisionActivationDepthwise4BitTest, MixedPrecisionActivationAddLayerTest, \
     MixedPrecisionActivationMultipleInputsTest, MixedPrecisionTotalMemoryUtilizationSearchTest, \
-    MixedPrecisionMultipleResourcesTightUtilizationSearchTest, MixedPrecisionReducedTotalMemorySearchTest
+    MixedPrecisionMultipleResourcesTightUtilizationSearchTest, MixedPrecisionReducedTotalMemorySearchTest, \
+    MixedPrecisionDistanceSigmoidTest, MixedPrecisionDistanceSoftmaxTest
 from tests.keras_tests.feature_networks_tests.feature_networks.multi_head_attention_test import MultiHeadAttentionTest
 from tests.keras_tests.feature_networks_tests.feature_networks.multi_inputs_to_node_test import MultiInputsToNodeTest
 from tests.keras_tests.feature_networks_tests.feature_networks.multiple_inputs_model_test import MultipleInputsModelTest
@@ -141,6 +142,8 @@ from tests.keras_tests.feature_networks_tests.feature_networks.const_representat
 from tests.keras_tests.feature_networks_tests.feature_networks.concatination_threshold_update import ConcatThresholdtest
 from tests.keras_tests.feature_networks_tests.feature_networks.const_quantization_test import ConstQuantizationTest, \
     AdvancedConstQuantizationTest
+from tests.keras_tests.feature_networks_tests.feature_networks.activation_16bit_test import Activation16BitTest, \
+    Activation16BitMixedPrecisionTest
 from model_compression_toolkit.qat.common.qat_config import TrainingMethod
 
 layers = tf.keras.layers
@@ -275,6 +278,10 @@ class FeatureNetworkTest(unittest.TestCase):
 
     def test_mixed_precision_activation_multiple_inputs(self):
         MixedPrecisionActivationMultipleInputsTest(self).run_test()
+
+    def test_mixed_precision_distance_functions(self):
+        MixedPrecisionDistanceSoftmaxTest(self).run_test()
+        MixedPrecisionDistanceSigmoidTest(self).run_test()
 
     def test_mixed_precision_total_memory_utilization(self):
         MixedPrecisionTotalMemoryUtilizationSearchTest(self).run_test()
@@ -555,12 +562,13 @@ class FeatureNetworkTest(unittest.TestCase):
     def test_const_quantization(self):
         c = (np.ones((32, 32, 16)) + np.random.random((32, 32, 16))).astype(np.float32)
         for func in [tf.add, tf.multiply, tf.subtract, tf.divide, tf.truediv]:
-            for qmethod in [QuantizationErrorMethod.MSE, QuantizationErrorMethod.NOCLIPPING]:
-                ConstQuantizationTest(self, func, c, qmethod=qmethod).run_test()
-                ConstQuantizationTest(self, func, c, input_reverse_order=True, qmethod=qmethod).run_test()
-                ConstQuantizationTest(self, func, c, input_reverse_order=True, use_kwargs=True, qmethod=qmethod).run_test()
-                ConstQuantizationTest(self, func, c, use_kwargs=True, qmethod=qmethod).run_test()
-                ConstQuantizationTest(self, func, 5.1, input_reverse_order=True, qmethod=qmethod).run_test()
+            for qmethod in [QuantizationMethod.POWER_OF_TWO, QuantizationMethod.SYMMETRIC, QuantizationMethod.UNIFORM]:
+                for error_method in [QuantizationErrorMethod.MSE, QuantizationErrorMethod.NOCLIPPING]:
+                    ConstQuantizationTest(self, func, c, qmethod=qmethod, error_method=error_method).run_test()
+                    ConstQuantizationTest(self, func, c, input_reverse_order=True, qmethod=qmethod, error_method=error_method).run_test()
+                    ConstQuantizationTest(self, func, c, input_reverse_order=True, use_kwargs=True, qmethod=qmethod, error_method=error_method).run_test()
+                    ConstQuantizationTest(self, func, c, use_kwargs=True, qmethod=qmethod, error_method=error_method).run_test()
+                    ConstQuantizationTest(self, func, 5.1, input_reverse_order=True, qmethod=qmethod, error_method=error_method).run_test()
 
         AdvancedConstQuantizationTest(self).run_test()
 
@@ -788,8 +796,13 @@ class FeatureNetworkTest(unittest.TestCase):
         TpcTest(f'{C.IMX500_TP_MODEL}.v2_lut', self).run_test()
         TpcTest(f'{C.IMX500_TP_MODEL}.v3', self).run_test()
         TpcTest(f'{C.IMX500_TP_MODEL}.v3_lut', self).run_test()
+        TpcTest(f'{C.IMX500_TP_MODEL}.v4', self).run_test()
         TpcTest(f'{C.TFLITE_TP_MODEL}.v1', self).run_test()
         TpcTest(f'{C.QNNPACK_TP_MODEL}.v1', self).run_test()
+
+    def test_16bit_activations(self):
+        Activation16BitTest(self).run_test()
+        Activation16BitMixedPrecisionTest(self).run_test()
 
 
 if __name__ == '__main__':
