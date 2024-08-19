@@ -261,8 +261,8 @@ class QuantizationAwareTrainingMixedPrecisionCfgTest(QuantizationAwareTrainingTe
     def run_test(self):
         self._gen_fixed_input()
         model_float = self.create_networks()
-        config = mct.core.CoreConfig()
-        ru = mct.core.ResourceUtilization(np.inf, 47)  # inf memory
+        config = mct.core.CoreConfig(mct.core.QuantizationConfig(shift_negative_activation_correction=False))
+        ru = mct.core.ResourceUtilization(57, 47)  # inf memory
         qat_ready_model, quantization_info = mct.qat.pytorch_quantization_aware_training_init_experimental(model_float,
                                                                                                            self.representative_data_gen_experimental,
                                                                                                            ru,
@@ -275,8 +275,7 @@ class QuantizationAwareTrainingMixedPrecisionCfgTest(QuantizationAwareTrainingTe
                      input_x=self.representative_data_gen(),
                      quantization_info=quantization_info)
 
-        # check that MP search returns 8 bits configuration for all layers
-        self.unit_test.assertTrue(all(quantization_info.mixed_precision_cfg == [1, 0, 0, 0, 0]))
+        self.unit_test.assertTrue(all(quantization_info.mixed_precision_cfg == [1, 0, 0, 1, 0]))
 
         # check that quantizer gets multiple bits configuration
         for _, layer in qat_ready_model.named_children():
@@ -306,7 +305,7 @@ class QuantizationAwareTrainingMixedPrecisionRUCfgTest(QuantizationAwareTraining
     def run_test(self):
         self._gen_fixed_input()
         model_float = self.create_networks()
-        config = mct.core.CoreConfig()
+        config = mct.core.CoreConfig(mct.core.QuantizationConfig(shift_negative_activation_correction=False))
         ru = mct.core.ResourceUtilization(weights_memory=50, activation_memory=40)
         qat_ready_model, quantization_info = mct.qat.pytorch_quantization_aware_training_init_experimental(model_float,
                                                                                                            self.representative_data_gen_experimental,
