@@ -38,10 +38,7 @@ def set_model(model: torch.nn.Module, train_mode: bool = False):
         model.eval()
 
     device = get_working_device()
-    if device.type == CPU:
-        model.cpu()
-    else:
-        model.cuda()
+    model.to(device)
 
 
 def to_torch_tensor(tensor,
