@@ -24,21 +24,25 @@ from torch import Tensor
 
 import model_compression_toolkit as mct
 from mct_quantizers import PytorchActivationQuantizationHolder, QuantizationTarget, PytorchQuantizationWrapper
+from mct_quantizers.common.base_inferable_quantizer import QuantizerID
 from mct_quantizers.common.get_all_subclasses import get_all_subclasses
 from mct_quantizers.pytorch.quantizers import BasePyTorchInferableQuantizer
-from model_compression_toolkit.core import MixedPrecisionQuantizationConfig
 from model_compression_toolkit.core.pytorch.pytorch_device_config import get_working_device
 from model_compression_toolkit.core.pytorch.utils import to_torch_tensor
-from model_compression_toolkit.qat.pytorch.quantizer.base_pytorch_qat_quantizer import BasePytorchQATTrainableQuantizer
-from model_compression_toolkit.qat.pytorch.quantizer.ste_rounding.symmetric_ste import STEActivationQATQuantizer
-from model_compression_toolkit.target_platform_capabilities.tpc_models.imx500_tpc.latest import generate_pytorch_tpc
-from model_compression_toolkit.target_platform_capabilities.tpc_models.imx500_tpc.latest import \
+from model_compression_toolkit.qat.pytorch.quantizer.base_pytorch_qat_weight_quantizer import \
+    BasePytorchQATWeightTrainableQuantizer
+from model_compression_toolkit.target_platform_capabilities.tpc_models.imx500_tpc.latest import generate_pytorch_tpc, \
     get_op_quantization_configs
+from model_compression_toolkit.trainable_infrastructure import TrainingMethod
+from model_compression_toolkit.trainable_infrastructure.common.base_trainable_quantizer import VariableGroup
+from model_compression_toolkit.trainable_infrastructure.pytorch.activation_quantizers.base_activation_quantizer import \
+    BasePytorchActivationTrainableQuantizer
+from model_compression_toolkit.trainable_infrastructure.pytorch.activation_quantizers.ste.symmetric_ste import \
+    STESymmetricActivationTrainableQuantizer
 from tests.common_tests.helpers.generate_test_tp_model import generate_test_tp_model, \
     generate_tp_model_with_activation_mp
 from tests.pytorch_tests.model_tests.base_pytorch_feature_test import BasePytorchFeatureNetworkTest
 from tests.pytorch_tests.tpc_pytorch import get_mp_activation_pytorch_tpc_dict
-from mct_quantizers.common.base_inferable_quantizer import QuantizerID
 
 
 def dummy_train(qat_ready_model, x, y):
@@ -89,7 +93,7 @@ class QuantizationAwareTrainingTest(BasePytorchFeatureNetworkTest):
     def __init__(self, unit_test, weight_bits=2, activation_bits=4,
                  weights_quantization_method=mct.target_platform.QuantizationMethod.POWER_OF_TWO,
                  activation_quantization_method=mct.target_platform.QuantizationMethod.POWER_OF_TWO,
-                 training_method=mct.qat.TrainingMethod.STE,
+                 training_method=TrainingMethod.STE,
                  finalize=False, test_loading=False):
 
         self.weight_bits = weight_bits
@@ -165,20 +169,25 @@ class QuantizationAwareTrainingTest(BasePytorchFeatureNetworkTest):
                      quantization_info=quantization_info)
 
     def compare(self, ptq_model, qat_ready_model, qat_finalized_model, input_x=None, quantization_info=None):
-        all_trainable_quantizers = get_all_subclasses(BasePytorchQATTrainableQuantizer)
+        all_qat_weight_quantizers = get_all_subclasses(BasePytorchQATWeightTrainableQuantizer)
+        all_qat_activation_quantizers = get_all_subclasses(BasePytorchActivationTrainableQuantizer)
         # check relevant layers are wrapped and correct quantizers were chosen
         for _, layer in qat_ready_model.named_children():
             if isinstance(layer, PytorchActivationQuantizationHolder):
-                q = [_q for _q in all_trainable_quantizers if _q.identifier == self.training_method
+                q = [_q for _q in all_qat_activation_quantizers if _q.identifier == self.training_method
                      and _q.quantization_target == QuantizationTarget.Activation
                      and self.activation_quantization_method in _q.quantization_method]
                 self.unit_test.assertTrue(len(q) == 1)
                 self.unit_test.assertTrue(isinstance(layer.activation_holder_quantizer, q[0]))
+                # quantization params in qat should be trainable (not frozen)
+                self.unit_test.assertFalse(layer.activation_holder_quantizer.freeze_quant_params)
+                trainable_params = layer.activation_holder_quantizer.get_trainable_variables(VariableGroup.QPARAMS)
+                self.unit_test.assertTrue(len(trainable_params) > 0)
             elif isinstance(layer, PytorchQuantizationWrapper) and isinstance(layer.layer, nn.Conv2d):
-                q = [_q for _q in all_trainable_quantizers if _q.identifier == self.training_method
+                q = [_q for _q in all_qat_weight_quantizers if _q.identifier == self.training_method
                      and _q.quantization_target == QuantizationTarget.Weights
                      and self.weights_quantization_method in _q.quantization_method
-                     and type(_q.identifier) == mct.qat.TrainingMethod]
+                     and type(_q.identifier) == TrainingMethod]
                 self.unit_test.assertTrue(len(q) == 1)
                 self.unit_test.assertTrue(isinstance(layer.weights_quantizers['weight'], q[0]))
 
@@ -232,9 +241,9 @@ class QuantizationAwareTrainingQuantizerHolderTest(QuantizationAwareTrainingTest
         self.unit_test.assertTrue(qat_ready_model.inp_activation_holder_quantizer.activation_holder_quantizer.quantization_config.activation_n_bits == 4)
         self.unit_test.assertTrue(qat_ready_model.activation_activation_holder_quantizer.activation_holder_quantizer.quantization_config.activation_n_bits == 4)
         self.unit_test.assertTrue(qat_ready_model.activation_1_activation_holder_quantizer.activation_holder_quantizer.quantization_config.activation_n_bits == 4)
-        self.unit_test.assertTrue(isinstance(qat_ready_model.inp_activation_holder_quantizer.activation_holder_quantizer, STEActivationQATQuantizer))
-        self.unit_test.assertTrue(isinstance(qat_ready_model.activation_activation_holder_quantizer.activation_holder_quantizer, STEActivationQATQuantizer))
-        self.unit_test.assertTrue(isinstance(qat_ready_model.activation_1_activation_holder_quantizer.activation_holder_quantizer, STEActivationQATQuantizer))
+        self.unit_test.assertTrue(isinstance(qat_ready_model.inp_activation_holder_quantizer.activation_holder_quantizer, STESymmetricActivationTrainableQuantizer))
+        self.unit_test.assertTrue(isinstance(qat_ready_model.activation_activation_holder_quantizer.activation_holder_quantizer, STESymmetricActivationTrainableQuantizer))
+        self.unit_test.assertTrue(isinstance(qat_ready_model.activation_1_activation_holder_quantizer.activation_holder_quantizer, STESymmetricActivationTrainableQuantizer))
 
         # Assert any other weights that added to quantization holder layer (only one allowed)
         self.unit_test.assertTrue(len(qat_ready_model.inp_activation_holder_quantizer.state_dict()) == 1)
