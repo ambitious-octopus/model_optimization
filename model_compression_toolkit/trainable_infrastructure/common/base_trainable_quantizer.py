@@ -12,24 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-from abc import abstractmethod
+from abc import ABC, abstractmethod
 from enum import Enum
-from typing import Union, List, Any
 from inspect import signature
-
-from model_compression_toolkit.core import common
-from model_compression_toolkit.logger import Logger
+from typing import Union, List, Any
 
 from mct_quantizers.common.base_inferable_quantizer import BaseInferableQuantizer, \
     QuantizationTarget
-from model_compression_toolkit.trainable_infrastructure.common.trainable_quantizer_config import \
-    TrainableQuantizerActivationConfig, TrainableQuantizerWeightsConfig
 from mct_quantizers.common.constants import QUANTIZATION_METHOD, \
     QUANTIZATION_TARGET
-
+from model_compression_toolkit.logger import Logger
+from model_compression_toolkit.trainable_infrastructure.common.trainable_quantizer_config import \
+    TrainableQuantizerActivationConfig, TrainableQuantizerWeightsConfig
 
 VAR = 'var'
 GROUP = 'group'
+
 
 class VariableGroup(Enum):
     """
@@ -41,14 +39,16 @@ class VariableGroup(Enum):
     QPARAMS = 1
 
 
-class BaseTrainableQuantizer(BaseInferableQuantizer):
+class BaseTrainableQuantizer(BaseInferableQuantizer, ABC):
     def __init__(self,
-                 quantization_config: Union[TrainableQuantizerActivationConfig, TrainableQuantizerWeightsConfig]):
+                 quantization_config: Union[TrainableQuantizerActivationConfig, TrainableQuantizerWeightsConfig],
+                 freeze_quant_params: bool = False):
         """
         This class is a base quantizer which validates the provided quantization config and defines an abstract function which any quantizer needs to implment.
 
         Args:
             quantization_config: quantizer config class contains all the information about the quantizer configuration.
+            freeze_quant_params: whether to freeze all learnable quantization parameters during training.
         """
 
         # verify the quantizer class that inherits this class only has a config argument and key-word arguments
@@ -85,11 +85,13 @@ class BaseTrainableQuantizer(BaseInferableQuantizer):
                 f"Unrecognized 'QuantizationTarget': {static_quantization_target}.")  # pragma: no cover
 
         self.quantizer_parameters = {}
+        self.freeze_quant_params = freeze_quant_params
 
     @classmethod
     def get_sig(cls):
         return signature(cls)
 
+    @abstractmethod
     def initialize_quantization(self,
                                 tensor_shape,
                                 name: str,
@@ -105,8 +107,9 @@ class BaseTrainableQuantizer(BaseInferableQuantizer):
         Returns: None
 
         """
-        raise NotImplemented  # pragma: no cover
+        raise NotImplementedError()  # pragma: no cover
 
+    @abstractmethod
     def __call__(self,
                  input2quantize,
                  training: bool):
@@ -120,7 +123,7 @@ class BaseTrainableQuantizer(BaseInferableQuantizer):
         Returns:
             The quantized tensor.
         """
-        raise NotImplemented  # pragma: no cover
+        raise NotImplementedError()  # pragma: no cover
 
     def activation_quantization(self) -> bool:
         """
@@ -162,7 +165,7 @@ class BaseTrainableQuantizer(BaseInferableQuantizer):
         Returns:
             BaseInferableQuantizer object.
         """
-        raise NotImplemented  # pragma: no cover
+        raise NotImplementedError()  # pragma: no cover
 
     def add_quantizer_variable(self, name: str, variable: Any, group: VariableGroup = VariableGroup.WEIGHTS):
         """
@@ -185,7 +188,6 @@ class BaseTrainableQuantizer(BaseInferableQuantizer):
         else:
             Logger.critical(f"Variable '{name}' does not exist in quantizer parameters.") # pragma: no cover
 
-
     @abstractmethod
     def get_trainable_variables(self, group: VariableGroup) -> List[Any]:
         """
@@ -197,4 +199,4 @@ class BaseTrainableQuantizer(BaseInferableQuantizer):
         Returns:
             List of trainable variables
         """
-        raise NotImplemented  # pragma: no cover
+        raise NotImplementedError()  # pragma: no cover

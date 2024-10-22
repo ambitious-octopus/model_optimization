@@ -12,30 +12,36 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-from typing import Callable, List, Tuple, Union
+import copy
+from typing import Callable, List, Tuple, Union, Generator
 
 import numpy as np
-from torch.nn import Module
-from tqdm import tqdm
-import copy
 import torch
+from mct_quantizers import PytorchQuantizationWrapper, PytorchActivationQuantizationHolder
+from torch.nn import Module
+from torch.utils.data import DataLoader
+from tqdm import tqdm
 
-from model_compression_toolkit.core.common.hessian import HessianInfoService
-from model_compression_toolkit.logger import Logger
+from model_compression_toolkit.core.common import Graph, BaseNode
+from model_compression_toolkit.core.common.framework_implementation import FrameworkImplementation
+from model_compression_toolkit.core.common.framework_info import FrameworkInfo
+from model_compression_toolkit.core.common.hessian import HessianInfoService, HessianScoresGranularity
 from model_compression_toolkit.core.pytorch.back2framework.pytorch_model_builder import PyTorchModelBuilder
+from model_compression_toolkit.core.pytorch.constants import BIAS
+from model_compression_toolkit.core.pytorch.data_util import FixedDatasetFromGenerator, IterableDatasetFromGenerator, \
+    IterableSampleWithConstInfoDataset, FixedSampleInfoDataset, get_collate_fn_with_extra_outputs
+from model_compression_toolkit.core.pytorch.utils import to_torch_tensor, set_model, torch_tensor_to_numpy
+from model_compression_toolkit.gptq.common.gptq_config import GradientPTQConfig
 from model_compression_toolkit.gptq.common.gptq_graph import get_kernel_attribute_name_for_gptq
 from model_compression_toolkit.gptq.common.gptq_training import GPTQTrainer
-from model_compression_toolkit.gptq.common.gptq_config import GradientPTQConfig
-from model_compression_toolkit.core.common import Graph, BaseNode
-from model_compression_toolkit.core.common.framework_info import FrameworkInfo
-from model_compression_toolkit.core.common.framework_implementation import FrameworkImplementation
-from model_compression_toolkit.core.pytorch.constants import BIAS
-from model_compression_toolkit.core.pytorch.utils import to_torch_tensor, set_model, torch_tensor_to_numpy
 from model_compression_toolkit.gptq.pytorch.graph_info import get_gptq_trainable_parameters, \
     get_weights_for_loss
+from model_compression_toolkit.gptq.pytorch.quantizer.gradual_activation_quantization import \
+    get_gradual_activation_quantizer_wrapper_factory
 from model_compression_toolkit.gptq.pytorch.quantizer.quantization_builder import quantization_builder
 from model_compression_toolkit.gptq.pytorch.quantizer.regularization_factory import get_regularization
-from mct_quantizers import PytorchQuantizationWrapper, PytorchActivationQuantizationHolder
+from model_compression_toolkit.logger import Logger
+from model_compression_toolkit.trainable_infrastructure.pytorch.util import get_total_grad_steps
 
 
 class PytorchGPTQTrainer(GPTQTrainer):
@@ -66,11 +72,20 @@ class PytorchGPTQTrainer(GPTQTrainer):
             representative_data_gen: Dataset to use for inputs of the models.
             hessian_info_service: HessianInfoService to fetch info based on the hessian approximation of the float model.
         """
+        def _get_total_grad_steps():
+            # TODO get it from the dataset
+            return get_total_grad_steps(representative_data_gen) * gptq_config.n_epochs
+
+        # must be set prior to model building in the base class constructor
+        self.gradual_act_quantizer_wrapper_factory = get_gradual_activation_quantizer_wrapper_factory(
+            gptq_config, _get_total_grad_steps)
+
         super().__init__(graph_float,
                          graph_quant,
                          gptq_config,
                          fw_impl,
                          fw_info,
+                         representative_data_gen_fn=representative_data_gen,
                          hessian_info_service=hessian_info_service)
 
         self.loss_list = []
@@ -95,10 +110,87 @@ class PytorchGPTQTrainer(GPTQTrainer):
         self.optimizer_with_param = self.get_optimizer_with_param(trainable_weights,
                                                                   trainable_bias,
                                                                   trainable_threshold)
+        hessian_cfg = self.gptq_config.hessian_weights_config
 
-        self.weights_for_average_loss = to_torch_tensor(self.compute_hessian_based_weights())
+        self.use_sample_layer_attention = hessian_cfg.per_sample
+        if self.use_sample_layer_attention:
+            # normalization is currently not supported, make sure the config reflects it.
+            if hessian_cfg.norm_scores or hessian_cfg.log_norm or hessian_cfg.scale_log_norm:
+                raise NotImplementedError()
+            self.train_dataloader = self._prepare_train_dataloader_sla(representative_data_gen)
+        else:
+            self.train_dataloader = self._prepare_train_dataloader_for_non_sla(representative_data_gen)
 
-        self.reg_func = get_regularization(self.gptq_config, representative_data_gen)
+        self.reg_func = get_regularization(self.gptq_config, _get_total_grad_steps)
+
+    def _prepare_train_dataloader_sla(self, data_gen_fn: Callable[[], Generator]) -> DataLoader:
+        """
+        Computes Sample-Layer Attention score and builds a train dataloader.
+
+        Args:
+            data_gen_fn: factory for representative dataset generator.
+
+        Returns:
+            PyTorch dataloader yielding three outputs - samples, weights for the distillation loss and
+              weights for regularization.
+        """
+        fixed_dataset = FixedDatasetFromGenerator(data_gen_fn)
+        orig_batch_size = fixed_dataset.orig_batch_size
+        # compute hessians for the whole dataset
+        hess_data_loader = DataLoader(fixed_dataset,
+                                      batch_size=self.gptq_config.hessian_weights_config.hessian_batch_size,
+                                      shuffle=False)
+        request = self._build_hessian_request(granularity=HessianScoresGranularity.PER_OUTPUT_CHANNEL,
+                                              data_loader=hess_data_loader,
+                                              n_samples=None)
+        layers_hessians = self.hessian_service.fetch_hessian(request, force_compute=True)
+
+        # compute sla score defined as max over channels
+        layers_hessians = {layer: to_torch_tensor(hess.max(1)) for layer, hess in layers_hessians.items()}
+
+        # build train dataset and dataloader
+        hessians_tensor = torch.stack([layers_hessians[layer.name] for layer in self.compare_points], dim=1)    # samples X layers
+        assert hessians_tensor.shape[1] == len(self.compare_points)
+        loss_weights = list(hessians_tensor)
+        sla_train_dataset = FixedSampleInfoDataset(fixed_dataset.samples, loss_weights)
+
+        reg_weights = hessians_tensor.mean(dim=0)
+        # use collate to add a single value to each batch
+        collate_fn = get_collate_fn_with_extra_outputs(reg_weights)
+
+        return DataLoader(sla_train_dataset, batch_size=orig_batch_size, shuffle=True, collate_fn=collate_fn)
+
+    def _prepare_train_dataloader_for_non_sla(self, data_gen_fn: Callable[[], Generator]) -> DataLoader:
+        """
+        Computes loss weights and builds a train dataloader.
+
+        Args:
+            data_gen_fn: factory for representative dataset generator.
+
+        Returns:
+            PyTorch dataloader yielding three outputs - samples, weights for the distillation loss and
+              weights for regularization.
+        """
+        dataset = IterableDatasetFromGenerator(data_gen_fn)
+        num_nodes = len(self.compare_points)
+
+        if self.gptq_config.use_hessian_based_weights:
+            hess_dataloader = DataLoader(dataset, batch_size=self.gptq_config.hessian_weights_config.hessian_batch_size)
+            loss_weights = torch.from_numpy(self.compute_hessian_based_weights(hess_dataloader))
+        else:
+            loss_weights = torch.ones(num_nodes) / num_nodes
+
+        train_dataset = IterableSampleWithConstInfoDataset(dataset, loss_weights)
+
+        reg_weights = torch.ones(num_nodes)
+        # use collate to add a single value to each batch
+        collate_fn = get_collate_fn_with_extra_outputs(reg_weights)
+
+        # NOTE: Don't just increase num_workers! With iterable dataset each worker fetches a full pass, so having
+        # more workers will result in multiple passes within the same epoch. Special handling is needed either
+        # in dataset or in worker_init_fn passed to dataloader, and it might not speed anything up anyway.
+        return DataLoader(train_dataset, batch_size=dataset.orig_batch_size,
+                          collate_fn=collate_fn, num_workers=1)
 
     def _is_gptq_weights_trainable(self,
                                    node: BaseNode) -> bool:
@@ -145,7 +237,6 @@ class PytorchGPTQTrainer(GPTQTrainer):
     def get_activation_quantizer_holder(self, n: BaseNode) -> Callable:
         """
         Retrieve a PytorchActivationQuantizationHolder layer to use for activation quantization of a node.
-        If the layer is not supposed to be wrapped with an activation quantizer - return None.
         Args:
             n: Node to attach a PytorchActivationQuantizationHolder to its output.
         Returns:
@@ -153,13 +244,13 @@ class PytorchGPTQTrainer(GPTQTrainer):
         """
         _, activation_quantizers = quantization_builder(n, self.gptq_config)
         # Holder by definition uses a single quantizer for the activation quantization
-        # thus we make sure this is the only possible case (unless it's a node we no activation
-        # quantization, which in this case has an empty list).
-        if len(activation_quantizers) == 1:
-            return PytorchActivationQuantizationHolder(activation_quantizers[0])
-        Logger.critical(f"'PytorchActivationQuantizationHolder' requires exactly one quantizer, "
-                        f"but {len(activation_quantizers)} were found for node {n.name}. "
-                        f"Ensure the node is configured with a single activation quantizer.")
+        # thus we make sure this is the only possible case
+        if len(activation_quantizers) != 1:
+            Logger.critical(f"'PytorchActivationQuantizationHolder' requires exactly one quantizer, "
+                            f"but {len(activation_quantizers)} were found for node {n.name}. "
+                            f"Ensure the node is configured with a single activation quantizer.")
+        quantizer = self.gradual_act_quantizer_wrapper_factory(activation_quantizers[0])
+        return PytorchActivationQuantizationHolder(quantizer)
 
     def build_gptq_model(self):
         """
@@ -176,11 +267,10 @@ class PytorchGPTQTrainer(GPTQTrainer):
 
         return gptq_model, gptq_user_info
 
-    def train(self, representative_data_gen: Callable):
+    def train(self):
         """
           GPTQ Training using pytorch framework
-          Args:
-              representative_data_gen: Dataset generator to get images.
+
           Returns:
               Graph after GPTQ training
           """
@@ -197,17 +287,21 @@ class PytorchGPTQTrainer(GPTQTrainer):
         # ----------------------------------------------
         # Training loop
         # ----------------------------------------------
-        self.micro_training_loop(representative_data_gen, self.gptq_config.n_epochs)
+        self.micro_training_loop(self.gptq_config.n_epochs)
 
     def compute_gradients(self,
                           y_float: List[torch.Tensor],
-                          input_tensors: List[torch.Tensor]) -> Tuple[torch.Tensor, List[np.ndarray]]:
+                          input_tensors: List[torch.Tensor],
+                          distill_loss_weights: torch.Tensor,
+                          round_reg_weights: torch.Tensor) -> Tuple[torch.Tensor, List[np.ndarray]]:
         """
         Get outputs from both teacher and student networks. Compute the observed error,
         and use it to compute the gradients and applying them to the student weights.
         Args:
             y_float: A list of reference tensor from the floating point network.
             input_tensors: A list of Input tensors to pass through the networks.
+            distill_loss_weights: Weights for the distillation loss.
+            round_reg_weights: Weight for the rounding regularization loss.
         Returns:
             Loss and gradients.
         """
@@ -222,9 +316,8 @@ class PytorchGPTQTrainer(GPTQTrainer):
                                            self.flp_weights_list,
                                            self.compare_points_mean,
                                            self.compare_points_std,
-                                           self.weights_for_average_loss)
-
-        reg_value = self.reg_func(self.fxp_model, self.gptq_config.regularization_factor)
+                                           distill_loss_weights)
+        reg_value = self.reg_func(self.fxp_model, self.gptq_config.regularization_factor, round_reg_weights)
 
         loss_value += reg_value
 
@@ -240,22 +333,21 @@ class PytorchGPTQTrainer(GPTQTrainer):
         return loss_value, grads
 
     def micro_training_loop(self,
-                            data_function: Callable,
                             n_epochs: int):
         """
         This function run a micro training loop on given set of parameters.
         Args:
-            data_function: A callable function that give a batch of samples.
             n_epochs: Number of update iterations of representative dataset.
         """
         with tqdm(range(n_epochs), "Running GPTQ optimization") as epochs_pbar:
             for _ in epochs_pbar:
-                with tqdm(data_function(), position=1, leave=False) as data_pbar:
-                    for data in data_pbar:
+                with tqdm(self.train_dataloader, position=1, leave=False) as data_pbar:
+                    for sample in data_pbar:
+                        data, loss_weight, reg_weight = to_torch_tensor(sample)
                         input_data = [d * self.input_scale for d in data]
                         input_tensor = to_torch_tensor(input_data)
                         y_float = self.float_model(input_tensor)  # running float model
-                        loss_value, grads = self.compute_gradients(y_float, input_tensor)
+                        loss_value, grads = self.compute_gradients(y_float, input_tensor, loss_weight, reg_weight)
                         # Run one step of gradient descent by updating the value of the variables to minimize the loss.
                         for (optimizer, _) in self.optimizer_with_param:
                             optimizer.step()

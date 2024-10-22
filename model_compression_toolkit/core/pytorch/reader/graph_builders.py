@@ -30,8 +30,7 @@ from model_compression_toolkit.core.pytorch.reader.node_holders import DummyPlac
 from model_compression_toolkit.logger import Logger
 
 
-def _extract_parameters_and_buffers(module: Union[torch.nn.Module, GraphModule],
-                                    to_numpy: Callable) -> Dict[str, np.ndarray]:
+def _extract_parameters_and_buffers(module: Union[torch.nn.Module, GraphModule]) -> Dict[str, np.ndarray]:
     """
     Extract parameters & buffers from input module to a dictionary.
     Args:
@@ -41,8 +40,8 @@ def _extract_parameters_and_buffers(module: Union[torch.nn.Module, GraphModule],
         Dictionary containing module parameters and buffers by name.
     """
 
-    named_parameters = {name: to_numpy(parameter) for name, parameter in module.named_parameters()}
-    named_buffers = {name: to_numpy(buffer) for name, buffer in module.named_buffers()}
+    named_parameters = {name: parameter for name, parameter in module.named_parameters()}
+    named_buffers = {name: buffer for name, buffer in module.named_buffers()}
 
     return {**named_parameters, **named_buffers}
 
@@ -80,28 +79,29 @@ def _build_input_alloc_and_call_args(n: Node, input_tensors_in_node_kwargs: Dict
     tensor_input_alloc = []
     op_call_args = list(n.args)
     if inputs_as_list:
-        op_call_args.pop(0)
+        # input tensors are a list in the first argument -> remove from op_call_args and go over
+        # the tensors in that list.
+        _args = op_call_args.pop(0)
     else:
-        for in_node in n.all_input_nodes:
-            # The extra for loop is used to tackle the case of the same input tensor for this node (e.g. torch.add(x, x)).
-            for i, arg in enumerate(n.args):
-                if arg == in_node:
-                    tensor_input_alloc.append(i)
-            for k, arg in input_tensors_in_node_kwargs.items():
-                if arg == in_node:
-                    tensor_input_alloc.append(k)
+        _args = n.args
+    for in_node in n.all_input_nodes:
+        # The extra for loop is used to tackle the case of the same input tensor for this node (e.g. torch.add(x, x)).
+        for i, arg in enumerate(_args):
+            if arg == in_node:
+                tensor_input_alloc.append(i)
+        for k, arg in input_tensors_in_node_kwargs.items():
+            if arg == in_node:
+                tensor_input_alloc.append(k)
 
     return op_call_args, tensor_input_alloc
 
 
-def _extract_torch_layer_data(node_module: torch.nn.Module,
-                              to_numpy: Callable) -> Tuple[Any, Dict[str, np.ndarray], Dict]:
+def _extract_torch_layer_data(node_module: torch.nn.Module) -> Tuple[Any, Dict[str, np.ndarray], Dict]:
     """
     Extract required data from a non-functional node to rebuild the PyTorch layer.
 
     Args:
         node_module: Torch layer, such as nn.Conv2d, nn.Linear, etc.
-        to_numpy: Function to convert framework's tensor to a Numpy array.
 
     Returns:
         Node layer class.
@@ -121,7 +121,7 @@ def _extract_torch_layer_data(node_module: torch.nn.Module,
         framework_attr[BIAS] = False if node_module.bias is None else True
 
     # Extract layer weights and named buffers.
-    weights = {n: w for n, w in _extract_parameters_and_buffers(node_module, to_numpy).items() if len(w.shape) > 0}
+    weights = {n: w for n, w in _extract_parameters_and_buffers(node_module).items() if len(w.shape) > 0}
     return node_type, weights, framework_attr
 
 
@@ -178,8 +178,11 @@ def nodes_builder(model: GraphModule,
     consts_dict = {}
     used_consts = set()
 
+    # Dictionary to track seen targets and their corresponding nodes to mark reused nodes
+    seen_targets = {}
+
     # Init parameters & buffers dictionary of the entire model. We later extract the constants values from this dictionary.
-    model_parameters_and_buffers = _extract_parameters_and_buffers(model, to_numpy)
+    model_parameters_and_buffers = _extract_parameters_and_buffers(model)
 
     for node in model.graph.nodes:
 
@@ -192,7 +195,7 @@ def nodes_builder(model: GraphModule,
 
         if node.target in module_dict.keys():
             # PyTorch module node, such as nn.Conv2d or nn.Linear.
-            node_type, weights, framework_attr = _extract_torch_layer_data(module_dict[node.target], to_numpy)
+            node_type, weights, framework_attr = _extract_torch_layer_data(module_dict[node.target])
 
         elif node.op == CALL_FUNCTION:
             # Node is a function that handle a parameter\buffer in the model.
@@ -229,13 +232,47 @@ def nodes_builder(model: GraphModule,
 
         # Add constants to weights dictionary.
         if node.op != PLACEHOLDER:
-            for i, input_node in enumerate(node.all_input_nodes):
-                if input_node in consts_dict:
-                    used_consts.add(input_node)
-                    weights.update({i: consts_dict[input_node]})
+            if len(node.args) and isinstance(node.args[0], (list, tuple)):
+                # handle weights in nodes with list input. Especially when there's a duplicate of a tensor
+                # in the input list (e.g. torch.concat([const1, x, const2, x, const3], 1)).
+                for input_node in node.all_input_nodes:
+                    for i, input_arg in enumerate(node.args[0]):
+                        if input_node is input_arg and input_node in consts_dict:
+                            used_consts.add(input_node)
+                            weights.update({i: consts_dict[input_node]})
+            else:
+                for i, input_node in enumerate(node.all_input_nodes):
+                    if input_node in consts_dict:
+                        used_consts.add(input_node)
+                        weights.update({i: consts_dict[input_node]})
 
         # Extract input and output shapes of the node.
         input_shape, output_shape = _extract_input_and_output_shapes(node)
+
+        # Check if this node's target has been seen before
+        reuse = False
+        reuse_group = None
+        node_group_key = create_reuse_group(node.target, weights)
+        # We mark nodes as reused only if there are multiple nodes in the graph with same
+        # 'target' and it has some weights.
+        if node_group_key in seen_targets and len(weights) > 0:
+            reuse = True
+            reuse_group = node_group_key
+            # Update the 'base/main' node with the reuse group as all other nodes in its group.
+            fx_node_2_graph_node[seen_targets[node_group_key]].reuse_group = reuse_group
+        else:
+            seen_targets[node_group_key] = node
+
+        # Convert weights to numpy arrays after reuse marking
+        # We delay this conversion to preserve the original tensor instances during the reuse identification process.
+        # This is crucial for correctly identifying identical weight instances in reused functional layers.
+        # By keeping the original PyTorch tensors until this point, we ensure that:
+        # 1. Reused layers with the same weight instances are correctly marked as reused.
+        # 2. The instance-based weight signature generation works as intended, using the memory
+        # addresses of the original tensors.
+        # Only after all reuse marking is complete do we convert to numpy arrays.
+        for weight_name, weight_value in weights.items():
+            weights[weight_name] = to_numpy(weight_value)
 
         # Initiate graph nodes.
         if node.op in [CALL_METHOD, CALL_FUNCTION]:
@@ -253,11 +290,8 @@ def nodes_builder(model: GraphModule,
                     node_kwargs[k] = v
 
             # Check if node's first input argument is a list of input fx nodes, such as torch.cat:
-            is_first_input_list_of_nodes = is_instance_first_arg(node, (list, tuple)) and all(
+            inputs_as_list = is_instance_first_arg(node, (list, tuple)) and all(
                 [isinstance(n, Node) for n in node.args[0]])
-            is_placeholder_a_list = is_instance_first_arg(node, Node) and \
-                     node.args[0].op == PLACEHOLDER and node.args[0].meta[TYPE] in (list, tuple)
-            inputs_as_list = is_first_input_list_of_nodes or is_placeholder_a_list
 
             # Build tensor_input_alloc required for the model builder. All input nodes are received as a list in the builder,
             # so tensor_input_alloc is used to allocate each input tensor in the correct place in the node's args & kwargs.
@@ -291,6 +325,8 @@ def nodes_builder(model: GraphModule,
                                      weights=weights,
                                      layer_class=node_type,
                                      has_activation=node_has_activation,
+                                     reuse=reuse,
+                                     reuse_group=reuse_group,
                                      **kwargs)
 
         # Generate graph inputs list.
@@ -333,7 +369,12 @@ def edges_builder(model: GraphModule,
                 if input_node in fx_node_2_graph_node:
                     # n_edges_for_input_node is for the case that the input node appears more than
                     # once as the input of the node, for example add(x, x)
-                    n_edges_for_input_node = sum([1 for a in node.args if input_node == a])
+                    if node in fx_node_2_graph_node and isinstance(fx_node_2_graph_node[node], FunctionalNode) and \
+                            fx_node_2_graph_node[node].inputs_as_list:
+                        _args = node.args[0]
+                    else:
+                        _args = node.args
+                    n_edges_for_input_node = sum([1 for a in _args if input_node == a])
                     n_edges_for_input_node = max(n_edges_for_input_node, 1)
 
                     dst_index = node.all_input_nodes.index(input_node)
@@ -351,3 +392,28 @@ def edges_builder(model: GraphModule,
                     Edge(fx_node_2_graph_node[node], fx_node_2_graph_node[out_node], src_index, dst_index))
 
     return edges
+
+
+def create_reuse_group(target: Any, weights: Dict[str, Any]) -> str:
+    """
+    Combine target and weights to create a unique reuse group identifier.
+    We consider the weights as part of the group identifier because they are not part of
+    the module in functional layers, but if a functional layer is using the same weights multiple
+    times it is considered to be reused.
+
+    This function creates a unique string identifier for a reuse group by combining
+    the target (typically a layer or operation name) with the weights IDs.
+
+    Args:
+        target (Any): The target of the node, typically a string or callable representing
+                      a layer or operation.
+        weights (Dict[str, Any]): A dictionary of weight names to weight values.
+                                  The values can be any type (typically tensors or arrays).
+
+    Returns:
+        str: A unique string identifier for the reuse group.
+    """
+    if not weights:
+        return str(target)
+    weight_ids = tuple(sorted(id(weight) for weight in weights.values()))
+    return f"{target}_{weight_ids}"

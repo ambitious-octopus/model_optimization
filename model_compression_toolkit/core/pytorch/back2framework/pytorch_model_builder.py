@@ -134,16 +134,25 @@ def _run_operation(n: BaseNode,
         input_tensors = n.insert_positional_weights_to_input_list(input_tensors)
         # convert inputs from positional weights (numpy arrays) to tensors. Must handle each element in the
         # list separately, because in FX the tensors are FX objects and fail to_torch_tensor
-        input_tensors = [to_torch_tensor(t, numpy_type=t.dtype) if isinstance(t, np.ndarray) else t
+        input_tensors = [to_torch_tensor(t, None) if isinstance(t, np.ndarray) else t
                          for t in input_tensors]
         _tensor_input_allocs = None
 
     if isinstance(n, FunctionalNode) and n.inputs_as_list:
-        out_tensors_of_n_float = op_func(input_tensors, *op_call_args, **functional_kwargs)
+        if isinstance(op_func, PytorchQuantizationWrapper):
+            # in wrapped nodes, the op args & kwargs are already in the PytorchQuantizationWrapper.
+            out_tensors_of_n_float = op_func(*input_tensors)
+        else:
+            out_tensors_of_n_float = op_func(input_tensors, *op_call_args, **functional_kwargs)
     else:
-        merged_inputs, functional_kwargs = _merge_inputs(n, input_tensors, op_call_args, functional_kwargs.copy(),
-                                                         tensor_input_allocs=_tensor_input_allocs)
-        out_tensors_of_n_float = op_func(*merged_inputs, **functional_kwargs)
+        if isinstance(op_func, PytorchQuantizationWrapper) and isinstance(n, FunctionalNode) and n.functional_op is not torch.gather:
+            # in wrapped nodes, the op args & kwargs are already in the PytorchQuantizationWrapper.
+            # Temporary patch: for torch.gather this is not the case, so need to merge inputs.
+            out_tensors_of_n_float = op_func(*input_tensors)
+        else:
+            merged_inputs, functional_kwargs = _merge_inputs(n, input_tensors, op_call_args, functional_kwargs.copy(),
+                                                             tensor_input_allocs=_tensor_input_allocs)
+            out_tensors_of_n_float = op_func(*merged_inputs, **functional_kwargs)
 
     # Add a fake quant node if the node has an activation threshold.
     out_tensors_of_n = out_tensors_of_n_float
@@ -222,6 +231,7 @@ class PytorchModel(torch.nn.Module):
         self.return_float_outputs = return_float_outputs
         self.wrapper = wrapper
         self.get_activation_quantizer_holder = get_activation_quantizer_holder_fn
+        self.reuse_groups = {}
         self._add_modules()
 
     # todo: Move to parent class BaseModelBuilder
@@ -279,7 +289,19 @@ class PytorchModel(torch.nn.Module):
         Build and add the modules and functional nodes from node_sort list as attributes to PytorchModel
         """
         for node in self.node_sort:
-            node_op = self.wrap(node)
+            if node.reuse:
+                # If the node is reused, retrieve the original module
+                if node.reuse_group not in self.reuse_groups:
+                    Logger.critical(f"Reuse group {node.reuse_group} not found for node {node.name}")
+
+                node_op = self.reuse_groups[node.reuse_group]
+            else:
+                # If it's not reused, create a new module
+                node_op = self.wrap(node)
+                if node.reuse_group:
+                    # Store the module for future reuse
+                    self.reuse_groups[node.reuse_group] = node_op
+
             if isinstance(node, FunctionalNode):
                 # for functional layers
                 setattr(self, node.name, node_op)

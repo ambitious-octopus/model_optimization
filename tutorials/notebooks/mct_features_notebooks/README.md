@@ -10,12 +10,12 @@ These techniques are essential for further optimizing models and achieving super
 <details id="keras-ptq">
   <summary>Post-Training Quantization (PTQ)</summary>
   
-  | Tutorial                     | Included Features                                                                                   |
-  |------------------------------|-----------------------------------------------------------------------------------------------------|
-  | [MobileNetV2](../imx500_notebooks/keras/example_keras_mobilenetv2_for_imx500.ipynb)  | &#x2705; PTQ                                                                                        |
-  | [Mixed-Precision MobileNetV2](keras/example_keras_mobilenet_mixed_precision.ipynb) | &#x2705; PTQ <br/> &#x2705; Mixed-Precision                                                         |
-  | [Nanodet-Plus](../imx500_notebooks/keras/example_keras_nanodet_plus_for_imx500.ipynb)             | &#x2705; PTQ                                                                                        |
-  | [YoloV8-nano](keras/example_keras_yolov8n.ipynb)              | &#x2705; PTQ                                                                                        |
+  | Tutorial                                                                                   | Included Features                                                                                   |
+  |--------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------|
+  | [Basic Post-Training Quantization (PTQ)](keras/example_keras_post-training_quantization.ipynb)          | &#x2705; PTQ                                                                                        |
+  | [MobileNetV2](../imx500_notebooks/keras/example_keras_mobilenetv2_for_imx500.ipynb)        | &#x2705; PTQ                                                                                        |
+  | [Mixed-Precision MobileNetV2](keras/example_keras_mobilenet_mixed_precision.ipynb)         | &#x2705; PTQ <br/> &#x2705; Mixed-Precision                                                         |
+  | [Nanodet-Plus](../imx500_notebooks/keras/example_keras_nanodet_plus_for_imx500.ipynb)      | &#x2705; PTQ                                                                                        |
   | [EfficientDetLite0](../imx500_notebooks/keras/example_keras_effdet_lite0_for_imx500.ipynb) | &#x2705; PTQ <br/> &#x2705; [sony-custom-layers](https://github.com/sony/custom_layers) integration |
 
 </details>
@@ -72,15 +72,11 @@ These techniques are essential for further optimizing models and achieving super
 <details id="pytorch-ptq">
   <summary>Post-Training Quantization (PTQ)</summary>
   
-  | Tutorial                                                                                                                              | Included Features                                                                                   |
-  |---------------------------------------------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------|
-  | [Training & Quantizing Model on MNIST](pytorch/example_pytorch_ptq_mnist.ipynb)                      | &#x2705; PTQ                                                                                        |
-  | [Mixed-Precision MobileNetV2 on Cifar100](pytorch/example_pytorch_mobilenetv2_cifar100_mixed_precision.ipynb) | &#x2705; PTQ <br/> &#x2705; Mixed-Precision                                                         |
-  | [SSDLite MobileNetV3 Quantization](pytorch/example_pytorch_ssdlite_mobilenetv3_object_detection.ipynb)                                    | &#x2705; PTQ                                                                                        |
-
-</details>
-
-
+  | Tutorial                                                                                                  | Included Features                           |
+  |-----------------------------------------------------------------------------------------------------------|---------------------------------------------|
+  | [Basic Post-Training Quantization (PTQ)](pytorch/example_pytorch_post_training_quantization.ipynb)        | &#x2705; PTQ                                |
+  | [Mixed-Precision Post-Training Quantization](pytorch/example_pytorch_mixed_precision_ptq.ipynb)           | &#x2705; PTQ <br/> &#x2705; Mixed-Precision |
+  | [Advanced Gradient-Based Post-Training Quantization (GPTQ)](pytorch/example_pytorch_mobilenet_gptq.ipynb) | &#x2705; GPTQ                               |
 
 </details>
 
@@ -97,9 +93,9 @@ These techniques are essential for further optimizing models and achieving super
 <details id="pytorch-data-generation">
   <summary>Data Generation</summary>
   
-  | Tutorial                                                                                                                          | Included Features                                                                 |
-  |-----------------------------------------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------|
-  | [Data-Free Quantization using Data Generation](pytorch/example_pytorch_data_generation.ipynb) | &#x2705; PTQ <br/> &#x2705; Data-Free Quantization <br/> &#x2705; Data Generation |
+  | Tutorial                                                                                            | Included Features                                                                                    |
+  |-----------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------|
+  | [Zero-Shot Quantization (ZSQ) using Data Generation](pytorch/example_pytorch_data_generation.ipynb) | &#x2705; PTQ <br/> &#x2705; ZSQ <br/> &#x2705; Data-Free Quantization <br/> &#x2705; Data Generation |
 
 </details>
 
@@ -110,5 +106,13 @@ These techniques are essential for further optimizing models and achieving super
   | Tutorial                                                                              | Included Features         |
   |---------------------------------------------------------------------------------------|-----------------|
   | [Exporter Usage](pytorch/example_pytorch_export.ipynb) | &#x2705; Export |
+  
+</details>
+<details id="pytorch-xquant">
+  <summary>Quantization Troubleshooting</summary>
+
+  | Tutorial                                                                                       | Included Features |
+  |------------------------------------------------------------------------------------------------|-------------------|
+  | [Quantization Troubleshooting using the Xquant Feature](pytorch/example_pytorch_xquant.ipynb) | &#x2705; Debug    |
   
 </details>

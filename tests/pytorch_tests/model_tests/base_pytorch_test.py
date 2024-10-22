@@ -65,9 +65,7 @@ class BasePytorchTest(BaseFeatureNetworkTest):
         }
 
     def get_core_configs(self):
-        base_quant_config = mct.core.QuantizationConfig(mct.core.QuantizationErrorMethod.NOCLIPPING,
-                                                        mct.core.QuantizationErrorMethod.NOCLIPPING, False, True)
-        base_core_config = mct.core.CoreConfig(quantization_config=base_quant_config,
+        base_core_config = mct.core.CoreConfig(quantization_config=self.get_quantization_config(),
                                                mixed_precision_config=self.get_mixed_precision_config(),
                                                debug_config=self.get_debug_config())
         return {
@@ -97,8 +95,10 @@ class BasePytorchTest(BaseFeatureNetworkTest):
                     # Check if we have a BatchNorm or MultiheadAttention layer in the model.
                     # If so, the outputs will not be the same, since the sqrt function in the
                     # Decomposition is not exactly like the sqrt in the C implementation of PyTorch.
-                    if torch.nn.BatchNorm2d or torch.nn.MultiheadAttention in [type(module) for name, module in float_model.named_modules()]:
-                        self.unit_test.assertTrue(np.all(np.isclose(torch_tensor_to_numpy(f), torch_tensor_to_numpy(q),
+                    float_model_operators = [type(module) for name, module in float_model.named_modules()]
+                    if (torch.nn.BatchNorm2d in float_model_operators or
+                        torch.nn.MultiheadAttention in float_model_operators or self.use_is_close_validation):
+                         self.unit_test.assertTrue(np.all(np.isclose(torch_tensor_to_numpy(f), torch_tensor_to_numpy(q),
                                                                     atol=self.float_reconstruction_error)))
                     else:
                         self.unit_test.assertTrue(torch_tensor_to_numpy(torch.sum(torch.abs(f - q))) == 0,

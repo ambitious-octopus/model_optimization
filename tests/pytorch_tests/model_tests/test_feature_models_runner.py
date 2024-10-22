@@ -21,10 +21,13 @@ import numpy as np
 import torch
 from torch import nn
 import model_compression_toolkit as mct
+from model_compression_toolkit.core.common.hessian import HessianEstimationDistribution
 from model_compression_toolkit.core.common.mixed_precision.distance_weighting import MpDistanceWeighting
 from model_compression_toolkit.core.common.network_editors import NodeTypeFilter, NodeNameFilter
 from model_compression_toolkit.gptq.common.gptq_config import RoundingType
+from model_compression_toolkit.gptq.pytorch.gptq_loss import sample_layer_attention_loss
 from model_compression_toolkit.target_platform_capabilities import constants as C
+from model_compression_toolkit.trainable_infrastructure import TrainingMethod
 from tests.pytorch_tests.model_tests.feature_models.add_net_test import AddNetTest
 from tests.pytorch_tests.model_tests.feature_models.bn_attributes_quantization_test import BNAttributesQuantization
 from tests.pytorch_tests.model_tests.feature_models.compute_max_cut_test import ComputeMaxCutTest
@@ -69,6 +72,7 @@ from tests.pytorch_tests.model_tests.feature_models.constant_conv_substitution_t
     ConstantConvReuseSubstitutionTest, ConstantConvTransposeSubstitutionTest
 from tests.pytorch_tests.model_tests.feature_models.multi_head_attention_test import MHALayerNetTest, \
     MHALayerNetFeatureTest
+from tests.pytorch_tests.model_tests.feature_models.scaled_dot_product_attention_test import ScaledDotProductAttentionTest
 from tests.pytorch_tests.model_tests.feature_models.scale_equalization_test import \
     ScaleEqualizationWithZeroPadNetTest, ScaleEqualizationNetTest, \
     ScaleEqualizationReluFuncNetTest, ScaleEqualizationReluFuncWithZeroPadNetTest, \
@@ -86,7 +90,8 @@ from tests.pytorch_tests.model_tests.feature_models.multiple_output_nodes_multip
 from tests.pytorch_tests.model_tests.feature_models.multiple_outputs_node_test import MultipleOutputsNetTest
 from tests.pytorch_tests.model_tests.feature_models.output_in_the_middle_test import OutputInTheMiddleNetTest
 from tests.pytorch_tests.model_tests.feature_models.parameter_net_test import ParameterNetTest
-from tests.pytorch_tests.model_tests.feature_models.reuse_layer_net_test import ReuseLayerNetTest
+from tests.pytorch_tests.model_tests.feature_models.reuse_layer_net_test import ReuseLayerNetTest, \
+    ReuseFunctionalLayerNetTest, ReuseModuleAndFunctionalLayersTest
 from tests.pytorch_tests.model_tests.feature_models.shift_negative_activation_test import ShiftNegaviteActivationNetTest
 from tests.pytorch_tests.model_tests.feature_models.split_concat_net_test import SplitConcatNetTest
 from tests.pytorch_tests.model_tests.feature_models.torch_tensor_attr_net_test import TorchTensorAttrNetTest
@@ -102,10 +107,11 @@ from tests.pytorch_tests.model_tests.feature_models.const_representation_test im
     ConstRepresentationCodeTest
 from model_compression_toolkit.target_platform_capabilities.target_platform import QuantizationMethod
 from tests.pytorch_tests.model_tests.feature_models.const_quantization_test import ConstQuantizationTest, \
-    AdvancedConstQuantizationTest
+    AdvancedConstQuantizationTest, ConstQuantizationMultiInputTest, ConstQuantizationExpandTest
 from tests.pytorch_tests.model_tests.feature_models.remove_identity_test import RemoveIdentityTest
 from tests.pytorch_tests.model_tests.feature_models.activation_16bit_test import Activation16BitTest, \
     Activation16BitMixedPrecisionTest
+from model_compression_toolkit.core.pytorch.pytorch_device_config import get_working_device
 
 
 class FeatureModelsTestRunner(unittest.TestCase):
@@ -157,7 +163,7 @@ class FeatureModelsTestRunner(unittest.TestCase):
         """
         AddNetTest(self).run_test()
 
-    def test_layer_norm_net(self):
+    def test_layer_norm_net(self):  # yoyo
         """
         These tests check the nn.functional.layer_norm operations.
         """
@@ -262,6 +268,8 @@ class FeatureModelsTestRunner(unittest.TestCase):
             ConstQuantizationTest(self, func, 5, input_reverse_order=True).run_test()
 
         AdvancedConstQuantizationTest(self).run_test()
+        ConstQuantizationMultiInputTest(self).run_test()
+        ConstQuantizationExpandTest(self).run_test()
 
     def test_const_representation(self):
         for const_dtype in [np.float32, np.int64, np.int32]:
@@ -358,7 +366,7 @@ class FeatureModelsTestRunner(unittest.TestCase):
         """
         ScalarTensorTest(self).run_test()
 
-    def test_layer_name(self):
+    def test_layer_name(self):  # yoyo
         """
         This test checks that we build a correct graph and correctly reconstruct the model
         given the fact that we reuse nodes and abuse the naming convention of fx (if we resuse
@@ -420,6 +428,8 @@ class FeatureModelsTestRunner(unittest.TestCase):
         The reuse of a layer in a model.
         """
         ReuseLayerNetTest(self).run_test()
+        ReuseFunctionalLayerNetTest(self).run_test()
+        ReuseModuleAndFunctionalLayersTest(self).run_test()
 
     def test_shift_negative_activation_net(self):
         """
@@ -584,6 +594,26 @@ class FeatureModelsTestRunner(unittest.TestCase):
         MHALayerNetFeatureTest(self, num_heads[0], q_seq_len[0], qdim[0] * num_heads[0],
                                kv_seq_len[0], kdim[0], vdim[0], bias=True, add_bias_kv=True).run_test()
 
+    def test_scaled_dot_product_attention_layer(self):
+        """
+        This test checks the ScaledDotProductDecomposition substitution feature.
+        """
+
+        batch_size = [3, 1, 5]
+        q_and_k_embd_size = [8, 9, 3]
+        v_embd_size = [19, 2, 6]
+        source_seq_len = [21, 4, 15]
+        target_seq_len = [13, 12, 9]
+        for i in range(len(batch_size)):
+            ScaledDotProductAttentionTest(self, batch_size[i], q_and_k_embd_size[i], v_embd_size[i], source_seq_len[i],
+                                          target_seq_len[i]).run_test(seed=3)
+            ScaledDotProductAttentionTest(self, batch_size[i], q_and_k_embd_size[i], v_embd_size[i], source_seq_len[i],
+                                          target_seq_len[i], dropout_p=0.0, scale=5).run_test(seed=3)
+            attn_mask = torch.ones(target_seq_len[i], source_seq_len[i]).to(get_working_device())
+            ScaledDotProductAttentionTest(self, batch_size[i], q_and_k_embd_size[i], v_embd_size[i], source_seq_len[i],
+                                          target_seq_len[i], attn_mask=attn_mask).run_test(seed=3)
+
+
     def test_gptq(self):
         """
         This test checks the GPTQ feature.
@@ -604,7 +634,6 @@ class FeatureModelsTestRunner(unittest.TestCase):
                          per_channel=True, hessian_weights=True, log_norm_weights=True, scaled_log_norm=True).run_test()
         GPTQWeightsUpdateTest(self, rounding_type=RoundingType.SoftQuantizer).run_test()
         GPTQLearnRateZeroTest(self, rounding_type=RoundingType.SoftQuantizer).run_test()
-
         GPTQAccuracyTest(self, rounding_type=RoundingType.SoftQuantizer,
                          weights_quant_method=QuantizationMethod.UNIFORM).run_test()
         GPTQAccuracyTest(self, rounding_type=RoundingType.SoftQuantizer,
@@ -616,6 +645,27 @@ class FeatureModelsTestRunner(unittest.TestCase):
         GPTQWeightsUpdateTest(self, rounding_type=RoundingType.SoftQuantizer,
                               weights_quant_method=QuantizationMethod.UNIFORM,
                               params_learning=False).run_test()  # TODO: When params learning is True, the uniform quantizer gets a min value  > max value
+
+    def test_gptq_with_gradual_activation(self):
+        """
+        This test checks the GPTQ feature with gradual activation quantization.
+        """
+        GPTQAccuracyTest(self, gradual_activation_quantization=True).run_test()
+        GPTQAccuracyTest(self, rounding_type=RoundingType.SoftQuantizer,
+                         gradual_activation_quantization=True).run_test()
+        GPTQLearnRateZeroTest(self, rounding_type=RoundingType.SoftQuantizer,
+                              gradual_activation_quantization=True).run_test()
+
+    def test_gptq_with_sample_layer_attention(self):
+        kwargs = dict(sample_layer_attention=True, loss=sample_layer_attention_loss,
+                      hessian_weights=True, hessian_num_samples=None,
+                      estimator_distribution=HessianEstimationDistribution.RADEMACHER,
+                      norm_scores=False, log_norm_weights=False, scaled_log_norm=False)
+        GPTQAccuracyTest(self, **kwargs).run_test()
+        GPTQAccuracyTest(self, hessian_batch_size=16, rounding_type=RoundingType.SoftQuantizer, **kwargs).run_test()
+        GPTQAccuracyTest(self, hessian_batch_size=5, rounding_type=RoundingType.SoftQuantizer,
+                         gradual_activation_quantization=True, **kwargs).run_test()
+        GPTQAccuracyTest(self, rounding_type=RoundingType.STE, **kwargs)
 
     def test_qat(self):
         """
@@ -644,17 +694,17 @@ class FeatureModelsTestRunner(unittest.TestCase):
         QuantizationAwareTrainingTest(self,
                                       weights_quantization_method=mct.target_platform.QuantizationMethod.SYMMETRIC,
                                       activation_quantization_method=mct.target_platform.QuantizationMethod.SYMMETRIC,
-                                      training_method=mct.qat.TrainingMethod.LSQ,
+                                      training_method=TrainingMethod.LSQ,
                                       finalize=True).run_test()
         QuantizationAwareTrainingTest(self,
                                       weights_quantization_method=mct.target_platform.QuantizationMethod.UNIFORM,
                                       activation_quantization_method=mct.target_platform.QuantizationMethod.UNIFORM,
-                                      training_method=mct.qat.TrainingMethod.LSQ,
+                                      training_method=TrainingMethod.LSQ,
                                       finalize=True).run_test()
         QuantizationAwareTrainingTest(self,
                                       weights_quantization_method=mct.target_platform.QuantizationMethod.POWER_OF_TWO,
                                       activation_quantization_method=mct.target_platform.QuantizationMethod.POWER_OF_TWO,
-                                      training_method=mct.qat.TrainingMethod.LSQ,
+                                      training_method=TrainingMethod.LSQ,
                                       finalize=True).run_test()
         QuantizationAwareTrainingQuantizerHolderTest(self).run_test()
         QuantizationAwareTrainingMixedPrecisionCfgTest(self).run_test()
@@ -681,6 +731,7 @@ class FeatureModelsTestRunner(unittest.TestCase):
         TpcTest(f'{C.IMX500_TP_MODEL}.v2_lut', self).run_test()
         TpcTest(f'{C.IMX500_TP_MODEL}.v3', self).run_test()
         TpcTest(f'{C.IMX500_TP_MODEL}.v3_lut', self).run_test()
+        TpcTest(f'{C.IMX500_TP_MODEL}.v4', self).run_test()
         TpcTest(f'{C.TFLITE_TP_MODEL}.v1', self).run_test()
         TpcTest(f'{C.QNNPACK_TP_MODEL}.v1', self).run_test()
 

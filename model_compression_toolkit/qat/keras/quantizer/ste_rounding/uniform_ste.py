@@ -16,28 +16,26 @@ import numpy as np
 import tensorflow as tf
 from tensorflow.python.framework.tensor_shape import TensorShape
 from model_compression_toolkit.constants import RANGE_MIN, RANGE_MAX
+from model_compression_toolkit.qat.keras.quantizer.base_keras_qat_weight_quantizer import \
+    BaseKerasQATWeightTrainableQuantizer
 from model_compression_toolkit.trainable_infrastructure.common.constants import FQ_MIN, FQ_MAX
 from model_compression_toolkit.trainable_infrastructure import KerasTrainableQuantizationWrapper
-from model_compression_toolkit.qat import TrainingMethod
+from model_compression_toolkit.trainable_infrastructure import TrainingMethod
 
 from mct_quantizers import mark_quantizer, QuantizationMethod, QuantizationTarget
-from mct_quantizers.keras.quantizers import \
-    BaseKerasInferableQuantizer, WeightsUniformInferableQuantizer, ActivationUniformInferableQuantizer
+from mct_quantizers.keras.quantizers import BaseKerasInferableQuantizer, WeightsUniformInferableQuantizer
 
 from model_compression_toolkit.qat.keras.quantizer.quant_utils import adjust_range_to_include_zero
 from model_compression_toolkit.core.common.quantization.quantizers.quantizers_helpers import fix_range_to_include_zero
-from model_compression_toolkit import constants as C
 
-from model_compression_toolkit.qat.keras.quantizer.base_keras_qat_quantizer import BaseKerasQATTrainableQuantizer
-from model_compression_toolkit.trainable_infrastructure import TrainableQuantizerWeightsConfig, \
-    TrainableQuantizerActivationConfig
+from model_compression_toolkit.trainable_infrastructure import TrainableQuantizerWeightsConfig
 from model_compression_toolkit.trainable_infrastructure.common.base_trainable_quantizer import VariableGroup
 
 
 @mark_quantizer(quantization_target=QuantizationTarget.Weights,
                 quantization_method=[QuantizationMethod.UNIFORM],
                 identifier=TrainingMethod.STE)
-class STEUniformWeightQATQuantizer(BaseKerasQATTrainableQuantizer):
+class STEUniformWeightQATQuantizer(BaseKerasQATWeightTrainableQuantizer):
     """
     Trainable constrained quantizer to quantize a layer inputs.
     """
@@ -148,91 +146,3 @@ class STEUniformWeightQATQuantizer(BaseKerasQATTrainableQuantizer):
                                                 input_rank=len(self.min_max_shape))
 
 
-@mark_quantizer(quantization_target=QuantizationTarget.Activation,
-                quantization_method=[QuantizationMethod.UNIFORM],
-                identifier=TrainingMethod.STE)
-class STEUniformActivationQATQuantizer(BaseKerasQATTrainableQuantizer):
-    """
-    Trainable constrained quantizer to quantize a layer outputs.
-    """
-
-    def __init__(self, quantization_config: TrainableQuantizerActivationConfig):
-        """
-        Initialize a STEUniformActivationQATQuantizer object with parameters to use
-        for the quantization.
-
-        Args:
-            quantization_config: trainable quantizer config class
-        """
-        super().__init__(quantization_config)
-
-        self.num_bits = quantization_config.activation_n_bits
-        self.min_range = quantization_config.activation_quantization_params[C.RANGE_MIN]
-        self.max_range = quantization_config.activation_quantization_params[C.RANGE_MAX]
-
-    def initialize_quantization(self,
-                                tensor_shape: TensorShape,
-                                name: str,
-                                layer: KerasTrainableQuantizationWrapper):
-        """
-        Add quantizer parameters to the quantizer parameters dictionary
-
-        Args:
-            tensor_shape: tensor shape of the quantized tensor.
-            name: Tensor name.
-            layer: Layer to quantize.
-        """
-        fq_min = layer.add_weight(
-            name + FQ_MIN,
-            shape=(),
-            initializer=tf.keras.initializers.Constant(-1.0),
-            trainable=False)
-        fq_min.assign(self.min_range)
-
-        fq_max = layer.add_weight(
-            name + FQ_MAX,
-            shape=(),
-            initializer=tf.keras.initializers.Constant(1.0),
-            trainable=False)
-        fq_max.assign(self.max_range)
-
-        # save the quantizer added parameters for later calculations
-        self.add_quantizer_variable(FQ_MIN, fq_min, VariableGroup.QPARAMS)
-        self.add_quantizer_variable(FQ_MAX, fq_max, VariableGroup.QPARAMS)
-
-    def __call__(self,
-                 inputs: tf.Tensor,
-                 training: bool):
-        """
-        Quantize a tensor.
-        Args:
-            inputs: Input tensor to quantize.
-            training: Whether the graph is in training mode.
-
-        Returns:
-            The quantized tensor.
-        """
-
-        _min = self.get_quantizer_variable(FQ_MIN)
-        _max = self.get_quantizer_variable(FQ_MAX)
-        _min, _max = adjust_range_to_include_zero(_min, _max, self.num_bits)
-        q_tensor = tf.quantization.fake_quant_with_min_max_vars(inputs, _min, _max,
-                                                                num_bits=self.num_bits)
-
-        return q_tensor
-
-    def convert2inferable(self) -> BaseKerasInferableQuantizer:
-        """
-        Convert quantizer to inferable quantizer.
-
-        Returns:
-            BaseKerasInferableQuantizer object.
-        """
-        min_range, max_range = fix_range_to_include_zero(self.get_quantizer_variable(FQ_MIN).numpy(),
-                                                         self.get_quantizer_variable(FQ_MAX).numpy(),
-                                                         self.num_bits)
-        return ActivationUniformInferableQuantizer(num_bits=self.num_bits,
-                                                   # In activation quantization is per-tensor only - thus we pass
-                                                   # the min/max as lists with a len of 1
-                                                   min_range=[min_range],
-                                                   max_range=[max_range])
